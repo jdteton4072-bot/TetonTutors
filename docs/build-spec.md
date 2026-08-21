@@ -4,31 +4,34 @@
 
 | | |
 |---|---|
-| Doc | TT-SPEC-001 · v0.1 draft |
+| Doc | TT-SPEC-001 · v0.2 draft |
 | Date | 2026-08-21 |
-| Owners | TPM (platform/data) · Eng-tutor (engine/content) |
+| Owners | TPM (data/integrations/review) · Eng-tutor (engine/content/review) |
+| Builder | AI coding agents (Claude Code / Cursor / Lovable), directed and reviewed by the founders |
 | Scope | Digital SAT (full) · ACT (engine only) · AP Calc AB FRQ (pilot) |
 | Status | Awaiting founder review + psychometric consult on flagged items |
 
 > **Basis note.** The Prompt-1 executive report was not attached when this spec was drafted, so it proceeds from established context: two founders, bootstrapped, first release in 90 days; SAT/ACT/AP test-prep marketplace; tutors are college students and HS teachers with uneven training. If the executive report contradicts an assumption here, the report wins — re-run the affected section.
 
-Written for the two people building it. Every call in this document is a decision, not an option.
+> **v0.2 change.** v0.1 chose an ASP.NET Core/C# stack to match the TPM's background. v0.2 re-targets the stack for the actual builder: AI coding agents. The founders' role shifts from writing the code to specifying, directing, and reviewing it — so the stack is chosen for what agents build most reliably, not for what the humans type fastest. Sections 3–5 (psychometrics, copilot, efficacy) are unchanged; they were never language-specific.
+
+Written for the two people directing the build. Every call in this document is a decision, not an option.
 
 ---
 
 ## 1. System architecture: components and data flow
 
-> **DECIDED — stack.** ASP.NET Core 8 **modular monolith**, PostgreSQL 16, React + TypeScript (Vite) frontend, KaTeX for math rendering. Hosted on Azure App Service (B-tier) + Azure Database for PostgreSQL Flexible Server, one region, ~$80–120/mo. Nightly jobs via Hangfire in-process — no queues, no microservices, no second database.
+> **DECIDED — stack (v0.2, agent-optimized).** **Next.js 15 (App Router) full-stack TypeScript monolith**, deployed on **Vercel**. **Supabase** for Postgres, Auth, Row-Level Security, and file storage. **Drizzle ORM** for typed schema and migrations. **KaTeX** for math rendering. Nightly calibration runs as a **Vercel Cron → API route handler** — no queues, no microservices, no second database. Hosting ≈ $45–100/mo (Vercel Pro + Supabase Pro; Metabase OSS pointed at the same Postgres).
 >
-> Rationale: the TPM writes C#; a monolith is the only architecture two people can operate. React over Blazor for one reason — the test player (timers, module transitions, math entry, mobile) lives or dies on frontend ecosystem, and future hires will be React hires. Everything else is the most boring possible choice, on purpose.
+> Rationale: this is the ecosystem AI coding agents are best at, by a wide margin — deepest training coverage, the stack Lovable emits natively, the stack Cursor and Claude Code complete most reliably, and the largest body of working open-source examples for every integration this product needs (Stripe Connect, Supabase Auth, Cal.com). One language across frontend, backend, and calibration math means an agent holds one mental model instead of two. The TPM's C#/data-engineering background is not wasted — it moves up a level, to owning the schema, the event-log contract, and review of the calibration math, which is where a human is actually irreplaceable in an agent-built codebase.
 
 ### Modules (in one deployable)
 
-- **Marketplace** — accounts (ASP.NET Identity), student–tutor pairing (manual concierge via admin screen — no matching algorithm), Stripe Connect Express for payments and tutor payouts, Cal.com hosted for scheduling, Zoom links for video. All four are buys; none is differentiating.
+- **Marketplace** — accounts (Supabase Auth: parent, student, tutor, admin roles enforced with RLS), student–tutor pairing (manual concierge via admin screen — no matching algorithm), Stripe Connect Express for payments and tutor payouts, Cal.com hosted for scheduling, Zoom links for video. All four are buys; none is differentiating.
 - **Item Bank** — authoring pipeline (LLM draft → human review queue → pretest pool → operational), item versioning, exposure counters. The review UI is a first-class product surface, not an admin afterthought: it is where item quality is actually made.
 - **Assessment Runner** — serves drills, sections, and full-length multistage tests; owns timing, module routing, and response capture.
-- **Calibration Job** — nightly Hangfire job that re-estimates item difficulty and student ability from the response log and writes updated parameters. It is a batch job, not a service.
-- **Copilot Service** — single LLM gateway module. Every model call in the product goes through it: one place for prompt templates, retries, cost metering, and full request/response logging.
+- **Calibration Job** — nightly cron-triggered route that re-estimates item difficulty and student ability from the response log and writes updated parameters (~300 lines of TypeScript; see the golden-test requirement in §7 Phase 6). It is a batch job, not a service.
+- **Copilot Service** — single LLM gateway module (Anthropic TypeScript SDK, server-side route handlers). Every model call in the product goes through it: one place for prompt templates, retries, cost metering, and full request/response logging.
 - **Event Log** — one append-only `events` table (JSONB payloads, typed `event_kind`). This is the spine of the system and the entire efficacy story (§5). Nothing writes analytics anywhere else.
 
 ### Data flow
@@ -42,7 +45,19 @@ COPILOT  student model (θ by domain + miss log) ──► session brief /
 ALL      every arrow above emits to the append-only event log
 ```
 
-Item content is structured JSON in Postgres JSONB (stem, choices, LaTeX strings, figures as stored SVG/PNG). No CMS. No document store. One database backs product, calibration, and (via a read replica later, same DB for now) the Metabase analytics dashboard.
+Item content is structured JSON in Postgres JSONB (stem, choices, LaTeX strings, figures in Supabase Storage). No CMS. No document store. One database backs product, calibration, and the Metabase analytics dashboard.
+
+**Mobile path (decided, deferred):** responsive web for beta. Post-beta, Expo/React Native reuses the React investment and the API serves it unchanged. Sell practice subscriptions on the web portal, not in the iOS app, to stay outside Apple's IAP cut; live-session payments for real-world services are exempt anyway.
+
+### Built by agents, reviewed by founders
+
+The repository is structured so an agent can build it well, and so the founders can catch it when it doesn't:
+
+- **`CLAUDE.md` at the repo root** — stack conventions, commands (`pnpm dev`, `pnpm test`, `pnpm db:migrate`), the event-log contract, and the hard rules (append-only events; parent-report numbers from DB only; no College Board content in the bank). Every agent session starts from this file; it is the standing brief.
+- **This spec lives in `docs/` and is the source of truth.** Each build phase in §7 is written as a self-contained work order — scope, out-of-scope, acceptance criteria — deliberately phrased so it can be pasted into Claude Code, Cursor, or Lovable as the prompt for that phase.
+- **Tests are the leash.** Vitest for unit tests (the calibration math gets *golden tests* against independently computed reference values — an agent's plausible-looking Rasch implementation is exactly the kind of code that must be proven, not trusted), Playwright for smoke flows (signup, drill, checkout), CI on every PR. An agent phase is not done until CI is green.
+- **Small PRs, human merge.** One phase = one branch = one PR. Founders review and merge; agents never push to main.
+- **Division of tools:** Lovable is acceptable for scaffolding v0 of the UI surfaces (portal pages, review UI shell); Claude Code/Cursor own the engine, integrations, and everything with correctness stakes. All roads end in the same repo and the same CI.
 
 ## 2. AI capability stack
 
@@ -56,7 +71,7 @@ Rule applied throughout: **buy every model, build every harness.** In 90 days yo
 | AP Calc AB free-response scoring (pilot) | BUY | `claude-opus-5`, rubric-anchored, 3-pass median | Lenient drift silently inflates predicted AP scores — the worst trust failure available to us. Mitigation: score displayed as a provisional band, never a point value; the tutor confirms or corrects every FRQ score at the next session; disagreements are logged and become the grader's validation set. |
 | Handwritten work capture (photo → transcript) | BUY | `claude-sonnet-5` (vision) | A mistranscribed exponent grades correct work wrong. Mitigation: student sees and confirms the transcript before anything is scored; confirmation is a logged event. |
 | Tutor copilot (brief, in-session moves, parent report) | BUY | `claude-sonnet-5`, streaming | A hallucinated claim in a parent email is a churn event and possibly worse. Mitigation: every number in a parent report is injected from the database, never generated; the LLM writes narrative glue only; a tutor must approve before send — hard gate, no bypass (§4). |
-| Score prediction | **BUILD** | ~300 lines: Rasch θ → scaled-score map | A bad single-number prediction destroys credibility with parents. Mitigation: it is statistics, not an LLM — predictions ship only as ranges anchored to an official practice test (§3.4). Never show a point score. |
+| Score prediction | **BUILD** | ~300 lines TypeScript: Rasch θ → scaled-score map | A bad single-number prediction destroys credibility with parents. Mitigation: it is statistics, not an LLM — predictions ship only as ranges anchored to an official practice test (§3.4). Never show a point score. Golden-tested (§7 Phase 6). |
 | Near-duplicate item detection | BUY | Voyage AI embeddings + cosine threshold (Anthropic has no embeddings product) | Near-dupes leak across a student's sessions and corrupt calibration (second exposure ≠ independent response). Mitigation: dedupe check at authoring time plus per-student exposure control at serve time; the latter limits damage even when the former misses. |
 
 **Cost reality check** (bootstrapped, so it matters): item drafting through the Batch API runs roughly $0.05/item — the entire launch bank drafts for under $150. FRQ scoring ≈ $0.15/response at three passes. Copilot calls are cents per session on Sonnet 5. Total model spend through launch should stay under $300/mo; if it doesn't, the meter in the Copilot Service gateway tells you exactly which template to fix.
@@ -97,7 +112,7 @@ Section θ from the Rasch model maps to a scaled-score range via anchoring: ever
 
 ### 3.5 Bank targets and the review bottleneck
 
-Day-90 target: **900 reviewed items** — 450 Math, 450 R&W. That supports three distinct full-length forms per section (3 forms × ~147 items) plus drill depth in the highest-traffic skills. Drafting is not the constraint; review is. At 8–12 fully-reviewed items/hour (including rationale and tag checks), 900 items is ~85–110 review hours over ten weeks. The engineer-tutor reviews all Math. **Decided:** contract an ELA reviewer (HS English teacher, ~10 hrs/week, ~$3–4K total) for R&W — this is one of only two outside spends in the MVP, and it is not optional; the alternative is an uncalibrated verbal bank reviewed by two math people.
+Day-90 target: **900 reviewed items** — 450 Math, 450 R&W. That supports three distinct full-length forms per section (3 forms × ~147 items) plus drill depth in the highest-traffic skills. Drafting is not the constraint; review is. At 8–12 fully-reviewed items/hour (including rationale and tag checks), 900 items is ~85–110 review hours over ten weeks. The engineer-tutor reviews all Math. **Decided:** contract an ELA reviewer (HS English teacher, ~10 hrs/week, ~$3–4K total) for R&W — this is one of the few outside spends in the MVP, and it is not optional; the alternative is an uncalibrated verbal bank reviewed by two math people.
 
 ## 4. Tutor copilot
 
@@ -145,6 +160,7 @@ The baseline is each student's intake official practice test. The north-star met
 - Tutor copilot v1: pre-session brief, in-session console, gated parent reports.
 - AP Calc AB FRQ pilot: ~20 in-house FRQs, photo capture, rubric-anchored grading with tutor confirmation. A pilot means: offered to existing students, labeled beta, building the grader's validation set.
 - Marketplace-lite: Stripe Connect payments/payouts, Cal.com scheduling, Zoom links, concierge matching, ~10–15 hand-recruited tutors.
+- Trust & safety beta gate: tutor background checks and parental consent (§8).
 - Full event log plus a Metabase dashboard over it.
 
 ### Deferred, with the reason
@@ -156,20 +172,39 @@ The baseline is each student's intake official practice test. The north-star met
 | Per-question CAT | Argued against on the merits in §3.3, not merely deferred — module-level MST is the right call at our calibration maturity, possibly permanently. |
 | Ambient audio copilot | Consent, privacy, and latency project; the in-session console covers the core value (§4.2). |
 | Automated tutor matching | Concierge matching is better product research than any cold-start algorithm, and at MVP volume it costs minutes a day. |
-| Mobile apps | Responsive web. Two people. |
+| Native mobile apps | Responsive web for beta; Expo/React Native post-beta reuses the React codebase and the same API (§1, mobile path). |
 | In-app video, group classes, essay feedback, gamification | None moves score gains in the next 90 days. |
 | Public efficacy claims | Gated on N and reviewer sign-off (§5). |
 
-### Sequence
+## 7. Agent build plan
 
-- **Weeks 1–3** — schema + event log, auth, Stripe/Cal.com wiring, authoring pipeline generating drafts. Contract the ELA reviewer and book the psychometric consult *now*; both have lead time.
-- **Weeks 4–6** — review UI live, bank building daily, drill runner with Elo picker shipping to first beta students (pretest data starts flowing).
-- **Weeks 7–9** — MST runner, calibration job, score-range prediction, anchor-test intake flow.
-- **Weeks 10–12** — copilot (brief → console → parent reports, in that order), AP pilot, Metabase dashboard.
-- **Week 13** — buffer; closed beta of 5–10 paying students with the founders tutoring some sessions themselves.
+Each phase below is a self-contained work order: paste it (with `CLAUDE.md` and this spec in the repo) into Claude Code or Cursor as the prompt for that phase. One phase = one branch = one PR; founders review and merge; a phase is done when its acceptance criteria pass in CI, not when the agent says so. Phases overlap where dependencies allow.
 
-Ownership split: the TPM owns marketplace, data layer, event log, and calibration job; the engineer-tutor owns the assessment runner, item pipeline and Math review, copilot prompts, and the AP pilot. The two outside spends — ELA reviewer (~$3–4K) and psychometric consult (~$2K) — are in scope and already assigned above.
+| # | Weeks | Work order (scope) | Acceptance criteria |
+|---|---|---|---|
+| 0 | 1 | Scaffold: Next.js 15 + TypeScript + Drizzle + Supabase wiring, `CLAUDE.md`, CI (lint, typecheck, Vitest, Playwright), seed script with fixture users and items. | `pnpm dev` boots; signup/login works for all four roles; CI green on the PR. |
+| 1 | 1–2 | Schema + event log: all tables from this spec (items, responses, sessions, assignments, events, anchor tests), RLS policies per role, the `logEvent()` helper every module must use. | Migrations apply cleanly; RLS tested per role in Vitest (a student cannot read another student's rows); every API mutation writes an event. |
+| 2 | 2–3 | Marketplace-lite: Stripe Connect Express onboarding + checkout + payout ledger (test mode), Cal.com embed, Zoom link field, concierge admin screen. | Playwright: parent books and pays for a session end-to-end in Stripe test mode; tutor payout ledger records the split. |
+| 3 | 3–5 | Item pipeline: batch drafting script (Opus 5 Batch API), review queue UI (approve/reject/edit per field, tag check, rationale check), Voyage dedupe, lifecycle states. | A reviewer processes a batch of 50 drafts to approved/rejected; rejected items carry a reason; no item skips review; dedupe flags a planted near-duplicate. |
+| 4 | 4–6 | Drill runner: KaTeX item player (MC4 + SPR), Elo-style next-item picker, mobile-responsive, response capture with latency. | Playwright: a student completes a 10-item drill on a phone-sized viewport; every response lands in the event log with context `drill`. |
+| 5 | 6–8 | MST runner: module timing, raw-score routing to easy/hard module 2, form assembly to blueprint, ACT-style single-stage linear mode. | Deterministic tests: module-1 raw score at/below threshold routes to the easy module 2, above routes hard; timing enforced; a full-length SAT completes and scores. |
+| 6 | 7–9 | Calibration + prediction: nightly cron route (Rasch EAP update, prior decay, promotion rules, item-health stats), θ→scaled-range mapping, anchor-test intake form. | **Golden tests: the Rasch estimates match independently computed reference values within tolerance** — this phase does not merge on plausibility. Nightly run updates *b* on seeded data; UI shows ranges with the provisional label. |
+| 7 | 9–11 | Copilot: pre-session brief, in-session console (miss → rationale + Socratic prompt + parallel item), parent-report draft with approval gate. | Unit test proves report numbers come only from DB slots; Playwright proves a report cannot send unapproved; accept/edit/reject events logged. |
+| 8 | 10–12 | AP pilot + analytics + trust wiring: FRQ photo → vision transcript → student confirm → 3-pass rubric scoring → tutor confirmation loop; Metabase dashboard; Checkr + consent flows from §8. | FRQ flow end-to-end with a fixture image; tutor override recorded; dashboard shows §5 metrics; an unverified tutor cannot be booked; a minor cannot activate without parental consent. |
+| — | 13 | Buffer + closed beta: 5–10 paying students, founders tutoring some sessions themselves. | Real sessions, real payments, event log populating, no severity-1 bugs open. |
+
+Founder roles in this plan: the TPM owns the schema and event-log contract, integration configuration (Stripe/Supabase/Cal.com keys and webhooks), and review of every data-touching PR; the engineer-tutor owns Math item review, copilot prompt templates, the golden-test reference values for Phase 6, and acceptance testing of the student/tutor experience. Outside spends: ELA reviewer (~$3–4K), psychometric consult (~$2K), plus §8's background checks and legal templates.
+
+## 8. Trust, safety & legal (beta gate)
+
+This section is launch-blocking, not polish — the users are minors.
+
+- **Tutor vetting** — background check via Checkr (~$30–80/tutor) plus ID verification before a tutor becomes bookable; signed conduct policy. The Phase 8 acceptance criterion enforces it in software: unverified tutors cannot be booked.
+- **Minors and consent** — the parent owns the account, billing, and consent; the student is a sub-account. Signup for under-18 students requires explicit parental consent (logged event). Under-13 signups are blocked outright (COPPA) — outside the SAT audience anyway.
+- **Legal documents** — Terms of Service, privacy policy, and tutoring-services agreement from a startup-legal template service with one counsel review pass (~$1–2K). ⚠ Not DIY and not agent-drafted-and-shipped: an agent may draft, a lawyer must review.
+- **Data posture** — minimize PII (no SSNs, no school IDs); no audio/video recording exists in the MVP by design (§4.2); parent-initiated data deletion honored; Supabase RLS as the enforcement layer, tested in Phase 1.
+- **Payments** — all charges go to the parent account only; tutors are paid exclusively through Stripe Connect (no off-platform payment paths in the ToS).
 
 ---
 
-*Open items for founder review: (a) confirm the assumptions in the basis note against the Prompt-1 executive report; (b) approve the two contractor spends; (c) schedule the psychometric consult against the four flagged items in §3 and the claims-discipline flag in §5.*
+*Open items for founder review: (a) confirm the assumptions in the basis note against the Prompt-1 executive report; (b) approve the outside spends (ELA reviewer, psychometric consult, Checkr, legal templates); (c) schedule the psychometric consult against the flagged items in §3 and §5.*
