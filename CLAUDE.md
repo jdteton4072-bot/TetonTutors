@@ -45,6 +45,15 @@ CI runs env-less.
    when its acceptance criteria pass in CI.
 7. Secrets stay server-side: `SUPABASE_SERVICE_ROLE_KEY` and `DATABASE_URL`
    never get a `NEXT_PUBLIC_` prefix and never appear in client components.
+8. **Role authority is `profiles.role` via `app.user_role()` (SQL), never the
+   JWT's `user_metadata`** — user_metadata is client-editable and is used for
+   display only. RLS policies and helpers live in `drizzle/0001_rls.sql`;
+   the client API surface is read-only except a user's own profile, and all
+   writes go through the app server. Any schema change must extend the RLS
+   migration and the matrix tests in `src/db/rls.test.ts` (they run against
+   embedded Postgres via PGlite — the shipped migrations are what's tested).
+9. **Students never read the `items` table directly** — content carries the
+   key and distractor rationales; the server strips them when serving items.
 
 ## Layout
 

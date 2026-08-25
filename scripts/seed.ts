@@ -24,12 +24,12 @@ const FIXTURE_ITEMS = [
   {
     format: "MC4" as const,
     status: "draft" as const,
+    domain: "Algebra",
+    skillTags: ["linear-equations-one-variable"],
     content: {
       stem: "If $3x - 7 = 14$, what is the value of $x$?",
       choices: { A: "7", B: "3", C: "21", D: "7/3" },
       key: "A",
-      domain: "Algebra",
-      skillTags: ["linear-equations-one-variable"],
       rationales: {
         B: "Divided 21 by 7 instead of 3 — swapped coefficient and constant.",
         C: "Added 7 to both sides but forgot to divide by 3.",
@@ -40,23 +40,23 @@ const FIXTURE_ITEMS = [
   {
     format: "SPR" as const,
     status: "draft" as const,
+    domain: "Problem-Solving and Data Analysis",
+    skillTags: ["mean-median"],
     content: {
       stem: "The mean of five numbers is 12. Four of them are 10, 11, 13, and 14. What is the fifth?",
       key: "12",
-      domain: "Problem-Solving and Data Analysis",
-      skillTags: ["mean-median"],
       rationales: {},
     },
   },
   {
     format: "MC4" as const,
     status: "draft" as const,
+    domain: "Expression of Ideas",
+    skillTags: ["transitions"],
     content: {
       stem: "Which choice completes the text with the most logical transition? …",
       choices: { A: "However,", B: "Therefore,", C: "Similarly,", D: "For instance," },
       key: "B",
-      domain: "Expression of Ideas",
-      skillTags: ["transitions"],
       rationales: {
         A: "Reads the second sentence as contrast; it is a consequence.",
         C: "Treats the sentences as parallel claims rather than cause and effect.",
