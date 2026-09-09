@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| Doc | TT-SPEC-001 · v0.2 draft |
+| Doc | TT-SPEC-001 · v0.3 draft |
 | Date | 2026-08-21 |
 | Owners | TPM (data/integrations/review) · Eng-tutor (engine/content/review) |
 | Builder | AI coding agents (Claude Code / Cursor / Lovable), directed and reviewed by the founders |
@@ -15,22 +15,26 @@
 
 > **v0.2 change.** v0.1 chose an ASP.NET Core/C# stack to match the TPM's background. v0.2 re-targets the stack for the actual builder: AI coding agents. The founders' role shifts from writing the code to specifying, directing, and reviewing it — so the stack is chosen for what agents build most reliably, not for what the humans type fastest. Sections 3–5 (psychometrics, copilot, efficacy) are unchanged; they were never language-specific.
 
+> **v0.3 change (founder decision).** Platform: **Railway** replaces Vercel for hosting and **Railway Postgres** replaces Supabase. Because Supabase also supplied auth, this pulls in one consequential swap: **Better Auth** (self-hosted, in our own Postgres via the Drizzle adapter) replaces Supabase Auth. Authorization enforcement moves to the app's data-access layer (the database is reachable only by the app server now — there is no client-facing DB API); the Phase 1 database work carries over unchanged because its migrations were written for vanilla Postgres, and the integrity triggers (append-only events, protected profile columns) plus the matrix tests remain the DB-level safety net. Sections 2–5 unchanged.
+
 Written for the two people directing the build. Every call in this document is a decision, not an option.
 
 ---
 
 ## 1. System architecture: components and data flow
 
-> **DECIDED — stack (v0.2, agent-optimized).** **Next.js 15 (App Router) full-stack TypeScript monolith**, deployed on **Vercel**. **Supabase** for Postgres, Auth, Row-Level Security, and file storage. **Drizzle ORM** for typed schema and migrations. **KaTeX** for math rendering. Nightly calibration runs as a **Vercel Cron → API route handler** — no queues, no microservices, no second database. Hosting ≈ $45–100/mo (Vercel Pro + Supabase Pro; Metabase OSS pointed at the same Postgres).
+> **DECIDED — stack (v0.3, agent-optimized).** **Next.js (App Router) full-stack TypeScript monolith**, deployed on **Railway**. **Railway Postgres** (vanilla Postgres) as the one database. **Better Auth** for authentication — self-hosted in that same Postgres via its Drizzle adapter, email+password, sessions in our own tables. **Drizzle ORM** for typed schema and migrations. **KaTeX** for math rendering. Nightly calibration runs as a **Railway cron service** invoking a script against the same database — no queues, no microservices, no second database. Hosting ≈ $10–30/mo (Railway app + Postgres + cron; Metabase OSS pointed at the same Postgres).
 >
-> Rationale: this is the ecosystem AI coding agents are best at, by a wide margin — deepest training coverage, the stack Lovable emits natively, the stack Cursor and Claude Code complete most reliably, and the largest body of working open-source examples for every integration this product needs (Stripe Connect, Supabase Auth, Cal.com). One language across frontend, backend, and calibration math means an agent holds one mental model instead of two. The TPM's C#/data-engineering background is not wasted — it moves up a level, to owning the schema, the event-log contract, and review of the calibration math, which is where a human is actually irreplaceable in an agent-built codebase.
+> Rationale: this is the ecosystem AI coding agents are best at, by a wide margin — deepest training coverage, the stack Cursor and Claude Code complete most reliably, and a large body of working examples for every integration this product needs (Stripe Connect, Better Auth, Cal.com). Railway keeps app, database, and cron on one platform with one bill, and vanilla Postgres means zero vendor-specific SQL — the schema and migrations run anywhere Postgres runs. Auth living in our own database means user data has no third-party dependency. One language across frontend, backend, and calibration math means an agent holds one mental model instead of two. The TPM's C#/data-engineering background is not wasted — it moves up a level, to owning the schema, the event-log contract, and review of the calibration math, which is where a human is actually irreplaceable in an agent-built codebase.
+>
+> **Authorization model (v0.3):** the database is reachable only by the app server, so access control is enforced in the server's data-access layer — every query is scoped by the session user's role and relationships (student → own rows; parent → their children; tutor → actively paired students; admin → all), with role authority in the `profiles` table. The database keeps its own guarantees regardless of app bugs: the append-only trigger on `events`, the protected-columns trigger on `profiles`, and the RLS layer from Phase 1 retained as tested defense-in-depth.
 
 ### Modules (in one deployable)
 
-- **Marketplace** — accounts (Supabase Auth: parent, student, tutor, admin roles enforced with RLS), student–tutor pairing (manual concierge via admin screen — no matching algorithm), Stripe Connect Express for payments and tutor payouts, Cal.com hosted for scheduling, Zoom links for video. All four are buys; none is differentiating.
+- **Marketplace** — accounts (Better Auth email+password: parent, student, tutor, admin roles enforced in the data-access layer, role authority in `profiles`), student–tutor pairing (manual concierge via admin screen — no matching algorithm), Stripe Connect Express for payments and tutor payouts, Cal.com hosted for scheduling, Zoom links for video. Payments, scheduling, and video are buys; none is differentiating.
 - **Item Bank** — authoring pipeline (LLM draft → human review queue → pretest pool → operational), item versioning, exposure counters. The review UI is a first-class product surface, not an admin afterthought: it is where item quality is actually made.
 - **Assessment Runner** — serves drills, sections, and full-length multistage tests; owns timing, module routing, and response capture.
-- **Calibration Job** — nightly cron-triggered route that re-estimates item difficulty and student ability from the response log and writes updated parameters (~300 lines of TypeScript; see the golden-test requirement in §7 Phase 6). It is a batch job, not a service.
+- **Calibration Job** — nightly Railway cron service running a script that re-estimates item difficulty and student ability from the response log and writes updated parameters (~300 lines of TypeScript; see the golden-test requirement in §7 Phase 6). It is a batch job, not a service.
 - **Copilot Service** — single LLM gateway module (Anthropic TypeScript SDK, server-side route handlers). Every model call in the product goes through it: one place for prompt templates, retries, cost metering, and full request/response logging.
 - **Event Log** — one append-only `events` table (JSONB payloads, typed `event_kind`). This is the spine of the system and the entire efficacy story (§5). Nothing writes analytics anywhere else.
 
@@ -45,7 +49,7 @@ COPILOT  student model (θ by domain + miss log) ──► session brief /
 ALL      every arrow above emits to the append-only event log
 ```
 
-Item content is structured JSON in Postgres JSONB (stem, choices, LaTeX strings, figures in Supabase Storage). No CMS. No document store. One database backs product, calibration, and the Metabase analytics dashboard.
+Item content is structured JSON in Postgres JSONB (stem, choices, LaTeX strings; item figures served as app assets for the MVP — object storage such as Cloudflare R2 is deferred until figure volume demands it). No CMS. No document store. One database backs product, auth, calibration, and the Metabase analytics dashboard.
 
 **Mobile path (decided, deferred):** responsive web for beta. Post-beta, Expo/React Native reuses the React investment and the API serves it unchanged. Sell practice subscriptions on the web portal, not in the iOS app, to stay outside Apple's IAP cut; live-session payments for real-world services are exempt anyway.
 
@@ -182,8 +186,8 @@ Each phase below is a self-contained work order: paste it (with `CLAUDE.md` and 
 
 | # | Weeks | Work order (scope) | Acceptance criteria |
 |---|---|---|---|
-| 0 | 1 | Scaffold: Next.js 15 + TypeScript + Drizzle + Supabase wiring, `CLAUDE.md`, CI (lint, typecheck, Vitest, Playwright), seed script with fixture users and items. | `pnpm dev` boots; signup/login works for all four roles; CI green on the PR. |
-| 1 | 1–2 | Schema + event log: all tables from this spec (items, responses, sessions, assignments, events, anchor tests), RLS policies per role, the `logEvent()` helper every module must use. | Migrations apply cleanly; RLS tested per role in Vitest (a student cannot read another student's rows); every API mutation writes an event. |
+| 0 | 1 | **Delivered (PR #2; auth replatformed to Better Auth in PR #4).** Scaffold: Next.js + TypeScript + Drizzle + Better Auth wiring, `CLAUDE.md`, CI (lint, typecheck, Vitest, Playwright), seed script with fixture users and items. | `pnpm dev` boots; signup/login works for all four roles; CI green on the PR. |
+| 1 | 1–2 | **Delivered (PR #3).** Schema + event log: all tables from this spec (items, responses, sessions, assignments, events, anchor tests), per-role access matrix + DB integrity triggers, the `logEvent()` helper every module must use. | Migrations apply cleanly on vanilla Postgres; access matrix tested per role in Vitest (a student cannot read another student's rows); every API mutation writes an event. |
 | 2 | 2–3 | Marketplace-lite: Stripe Connect Express onboarding + checkout + payout ledger (test mode), Cal.com embed, Zoom link field, concierge admin screen. | Playwright: parent books and pays for a session end-to-end in Stripe test mode; tutor payout ledger records the split. |
 | 3 | 3–5 | Item pipeline: batch drafting script (Opus 5 Batch API), review queue UI (approve/reject/edit per field, tag check, rationale check), Voyage dedupe, lifecycle states. | A reviewer processes a batch of 50 drafts to approved/rejected; rejected items carry a reason; no item skips review; dedupe flags a planted near-duplicate. |
 | 4 | 4–6 | Drill runner: KaTeX item player (MC4 + SPR), Elo-style next-item picker, mobile-responsive, response capture with latency. | Playwright: a student completes a 10-item drill on a phone-sized viewport; every response lands in the event log with context `drill`. |
@@ -193,7 +197,7 @@ Each phase below is a self-contained work order: paste it (with `CLAUDE.md` and 
 | 8 | 10–12 | AP pilot + analytics + trust wiring: FRQ photo → vision transcript → student confirm → 3-pass rubric scoring → tutor confirmation loop; Metabase dashboard; Checkr + consent flows from §8. | FRQ flow end-to-end with a fixture image; tutor override recorded; dashboard shows §5 metrics; an unverified tutor cannot be booked; a minor cannot activate without parental consent. |
 | — | 13 | Buffer + closed beta: 5–10 paying students, founders tutoring some sessions themselves. | Real sessions, real payments, event log populating, no severity-1 bugs open. |
 
-Founder roles in this plan: the TPM owns the schema and event-log contract, integration configuration (Stripe/Supabase/Cal.com keys and webhooks), and review of every data-touching PR; the engineer-tutor owns Math item review, copilot prompt templates, the golden-test reference values for Phase 6, and acceptance testing of the student/tutor experience. Outside spends: ELA reviewer (~$3–4K), psychometric consult (~$2K), plus §8's background checks and legal templates.
+Founder roles in this plan: the TPM owns the schema and event-log contract, integration configuration (Stripe/Railway/Cal.com keys and webhooks), and review of every data-touching PR; the engineer-tutor owns Math item review, copilot prompt templates, the golden-test reference values for Phase 6, and acceptance testing of the student/tutor experience. Outside spends: ELA reviewer (~$3–4K), psychometric consult (~$2K), plus §8's background checks and legal templates.
 
 ## 8. Trust, safety & legal (beta gate)
 
@@ -202,7 +206,7 @@ This section is launch-blocking, not polish — the users are minors.
 - **Tutor vetting** — background check via Checkr (~$30–80/tutor) plus ID verification before a tutor becomes bookable; signed conduct policy. The Phase 8 acceptance criterion enforces it in software: unverified tutors cannot be booked.
 - **Minors and consent** — the parent owns the account, billing, and consent; the student is a sub-account. Signup for under-18 students requires explicit parental consent (logged event). Under-13 signups are blocked outright (COPPA) — outside the SAT audience anyway.
 - **Legal documents** — Terms of Service, privacy policy, and tutoring-services agreement from a startup-legal template service with one counsel review pass (~$1–2K). ⚠ Not DIY and not agent-drafted-and-shipped: an agent may draft, a lawyer must review.
-- **Data posture** — minimize PII (no SSNs, no school IDs); no audio/video recording exists in the MVP by design (§4.2); parent-initiated data deletion honored; Supabase RLS as the enforcement layer, tested in Phase 1.
+- **Data posture** — minimize PII (no SSNs, no school IDs); no audio/video recording exists in the MVP by design (§4.2); parent-initiated data deletion honored; access enforced in the server's data-access layer with DB-level integrity triggers and the Phase 1 matrix tests as the safety net (§1, authorization model).
 - **Payments** — all charges go to the parent account only; tutors are paid exclusively through Stripe Connect (no off-platform payment paths in the ToS).
 
 ---
