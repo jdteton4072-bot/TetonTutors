@@ -1,15 +1,17 @@
 // Seed fixture users and items for local development.
 //
-// Requires DATABASE_URL. If SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY are also
-// set, matching auth users are created so the fixture accounts can actually
-// log in (password below); otherwise only profile rows are inserted.
+// Requires DATABASE_URL (Railway Postgres). Fixture users are created
+// through Better Auth so their passwords are properly hashed and the
+// profiles/events hooks fire; the admin fixture is then promoted directly
+// in the database (the public signup path can never mint an admin).
 //
 // Run: pnpm db:seed
 
-import { createClient } from "@supabase/supabase-js";
-import { drizzle } from "drizzle-orm/postgres-js";
-import postgres from "postgres";
-import { events, items, profiles } from "../src/db/schema";
+import { eq } from "drizzle-orm";
+import { user } from "../src/db/auth-schema";
+import { getDb } from "../src/db/client";
+import { events, items, pairings, profiles } from "../src/db/schema";
+import { getAuth } from "../src/lib/auth";
 
 const FIXTURE_PASSWORD = "teton-dev-password-1";
 
@@ -67,51 +69,65 @@ const FIXTURE_ITEMS = [
 ];
 
 async function main() {
-  const dbUrl = process.env.DATABASE_URL;
-  if (!dbUrl) {
+  const db = getDb();
+  const auth = getAuth();
+  if (!db || !auth) {
     console.error("DATABASE_URL is not set — nothing to seed. See .env.example.");
     process.exit(1);
   }
 
-  const supabaseUrl = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  const admin =
-    supabaseUrl && serviceKey
-      ? createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } })
-      : null;
-  if (!admin) {
-    console.warn(
-      "SUPABASE_SERVICE_ROLE_KEY not set — seeding profiles without auth users (fixture logins will not work).",
-    );
+  for (const fixture of FIXTURE_USERS) {
+    // Admin signs up as a student (the role clamp allows nothing higher),
+    // then is promoted below.
+    const signupRole = fixture.role === "admin" ? "student" : fixture.role;
+    try {
+      await auth.api.signUpEmail({
+        body: {
+          email: fixture.email,
+          password: FIXTURE_PASSWORD,
+          name: fixture.displayName,
+          role: signupRole,
+        },
+      });
+      console.log(`user: ${fixture.email} (${fixture.role})`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (/exist/i.test(message)) {
+        console.log(`user: ${fixture.email} already present, skipping`);
+      } else {
+        throw err;
+      }
+    }
   }
 
-  const sql = postgres(dbUrl, { max: 1, prepare: false });
-  const db = drizzle(sql);
+  // Promote the admin fixture directly — trusted server-side path only.
+  await db
+    .update(user)
+    .set({ role: "admin" })
+    .where(eq(user.email, "admin@example.com"));
+  await db
+    .update(profiles)
+    .set({ role: "admin" })
+    .where(eq(profiles.email, "admin@example.com"));
+  console.log("admin@example.com promoted to admin");
 
-  for (const user of FIXTURE_USERS) {
-    let id = crypto.randomUUID();
-    if (admin) {
-      const { data, error } = await admin.auth.admin.createUser({
-        email: user.email,
-        password: FIXTURE_PASSWORD,
-        email_confirm: true,
-        user_metadata: { display_name: user.displayName, role: user.role },
-      });
-      if (error && !error.message.includes("already been registered")) {
-        throw error;
-      }
-      if (data?.user) id = data.user.id;
-    }
+  // Pair the fixture tutor with the fixture student.
+  const byEmail = async (email: string) =>
+    (
+      await db
+        .select({ id: profiles.id })
+        .from(profiles)
+        .where(eq(profiles.email, email))
+        .limit(1)
+    )[0]?.id;
+  const tutorId = await byEmail("tutor@example.com");
+  const studentId = await byEmail("student@example.com");
+  if (tutorId && studentId) {
     await db
-      .insert(profiles)
-      .values({
-        id,
-        role: user.role,
-        email: user.email,
-        displayName: user.displayName,
-      })
-      .onConflictDoNothing({ target: profiles.email });
-    console.log(`profile: ${user.email} (${user.role})`);
+      .insert(pairings)
+      .values({ tutorId, studentId })
+      .onConflictDoNothing();
+    console.log("pairing: tutor@example.com ↔ student@example.com");
   }
 
   for (const item of FIXTURE_ITEMS) {
@@ -125,12 +141,8 @@ async function main() {
     payload: { users: FIXTURE_USERS.length, items: FIXTURE_ITEMS.length },
   });
 
-  await sql.end();
-  console.log(
-    admin
-      ? `Done. Fixture password for all users: ${FIXTURE_PASSWORD}`
-      : "Done (profiles only).",
-  );
+  console.log(`Done. Fixture password for all users: ${FIXTURE_PASSWORD}`);
+  process.exit(0);
 }
 
 main().catch((err) => {

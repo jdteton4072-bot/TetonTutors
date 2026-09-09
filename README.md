@@ -10,15 +10,15 @@ Agent conventions live in [`CLAUDE.md`](CLAUDE.md).
 
 ```bash
 pnpm install
-cp .env.example .env.local   # fill in Supabase credentials
+cp .env.example .env.local   # Railway Postgres URL + Better Auth secret
 pnpm db:migrate              # apply Drizzle migrations
 pnpm db:seed                 # fixture users + items
 pnpm dev                     # http://localhost:3000
 ```
 
-The app runs without Supabase credentials in a degraded, unauthenticated mode
-(useful for UI work and CI); auth and data features need a real Supabase
-project.
+The app runs without credentials in a degraded, unauthenticated mode (useful
+for UI work and CI); auth and data features need a Railway Postgres
+`DATABASE_URL`.
 
 ## Checks
 
@@ -31,5 +31,5 @@ CI runs all of the above on every pull request.
 
 ## Stack
 
-Next.js (App Router) · TypeScript · Tailwind · Supabase (Postgres/Auth/RLS) ·
-Drizzle ORM · Vitest · Playwright · Vercel
+Next.js (App Router) · TypeScript · Tailwind · Railway (hosting/Postgres/cron) ·
+Better Auth · Drizzle ORM · Cloudflare (DNS/CDN, R2) · Vitest · Playwright
