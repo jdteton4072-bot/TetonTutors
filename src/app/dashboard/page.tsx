@@ -1,22 +1,34 @@
+import { eq } from "drizzle-orm";
+import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { signOut } from "@/app/auth/actions";
-import { dashboardLabel, isRole } from "@/lib/roles";
-import { getSupabaseServer } from "@/lib/supabase/server";
+import { getDb } from "@/db/client";
+import { profiles } from "@/db/schema";
+import { getAuth } from "@/lib/auth";
+import { dashboardLabel, type Role } from "@/lib/roles";
 
 export const metadata = { title: "Dashboard · Teton Tutors" };
 
 export default async function DashboardPage() {
-  const supabase = await getSupabaseServer();
-  if (!supabase) redirect("/login");
+  const auth = getAuth();
+  if (!auth) redirect("/login");
 
-  const { data } = await supabase.auth.getUser();
-  const user = data.user;
-  if (!user) redirect("/login");
+  const session = await auth.api.getSession({ headers: await headers() });
+  if (!session) redirect("/login");
 
-  const metaRole = user.user_metadata?.role;
-  const role = isRole(metaRole) ? metaRole : "student";
-  const name =
-    (user.user_metadata?.display_name as string | undefined) ?? user.email;
+  // Role authority is the profiles table (CLAUDE.md hard rule 8).
+  const db = getDb();
+  const profile = db
+    ? (
+        await db
+          .select({ role: profiles.role })
+          .from(profiles)
+          .where(eq(profiles.id, session.user.id))
+          .limit(1)
+      )[0]
+    : undefined;
+  const role: Role = profile?.role ?? "student";
+  const name = session.user.name || session.user.email;
 
   return (
     <main className="mx-auto flex min-h-screen max-w-2xl flex-col gap-6 p-8">

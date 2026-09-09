@@ -9,8 +9,10 @@ phased build plan and each phase's acceptance criteria.
 
 ## Stack
 
-Next.js (App Router) + TypeScript, Tailwind v4, Supabase (Postgres, Auth,
-RLS, Storage), Drizzle ORM, Vercel (hosting + cron), Vitest + Playwright.
+Next.js (App Router) + TypeScript, Tailwind v4, Railway (hosting, Postgres,
+cron), Better Auth (self-hosted in our Postgres, Drizzle adapter — see
+`src/lib/auth.ts`), Drizzle ORM, Cloudflare (DNS/CDN/WAF in front; R2 when
+object storage is needed), Vitest + Playwright.
 Note: Next 16 renamed `middleware.ts` → `proxy.ts` and `cookies()` is async —
 check `node_modules/next/dist/docs/` before using conventions from memory.
 
@@ -19,13 +21,14 @@ check `node_modules/next/dist/docs/` before using conventions from memory.
 - `pnpm dev` — dev server
 - `pnpm lint` / `pnpm typecheck` — must pass before any commit
 - `pnpm test` — Vitest unit tests
-- `pnpm build && pnpm test:e2e` — Playwright smoke tests (no Supabase env needed)
+- `pnpm build && pnpm test:e2e` — Playwright smoke tests (no env needed)
 - `pnpm db:generate` / `pnpm db:migrate` — Drizzle migrations (needs `DATABASE_URL`)
 - `pnpm db:seed` — fixture users + items (see `scripts/seed.ts`)
 
-Copy `.env.example` → `.env.local` for real Supabase credentials. The app must
+Copy `.env.example` → `.env.local` for real credentials (Railway Postgres
+`DATABASE_URL`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`). The app must
 degrade gracefully without them (unauthenticated behavior, never a crash) —
-CI runs env-less.
+CI runs env-less and `getAuth()`/`getDb()` return null when unconfigured.
 
 ## Hard rules
 
@@ -43,23 +46,28 @@ CI runs env-less.
    independently computed reference values (build-spec §7 Phase 6).
 6. **One phase = one branch = one PR.** Never push to `main`. A phase is done
    when its acceptance criteria pass in CI.
-7. Secrets stay server-side: `SUPABASE_SERVICE_ROLE_KEY` and `DATABASE_URL`
-   never get a `NEXT_PUBLIC_` prefix and never appear in client components.
-8. **Role authority is `profiles.role` via `app.user_role()` (SQL), never the
-   JWT's `user_metadata`** — user_metadata is client-editable and is used for
-   display only. RLS policies and helpers live in `drizzle/0001_rls.sql`;
-   the client API surface is read-only except a user's own profile, and all
-   writes go through the app server. Any schema change must extend the RLS
-   migration and the matrix tests in `src/db/rls.test.ts` (they run against
-   embedded Postgres via PGlite — the shipped migrations are what's tested).
+7. Secrets stay server-side: `DATABASE_URL` and `BETTER_AUTH_SECRET` never
+   get a `NEXT_PUBLIC_` prefix and never appear in client components.
+8. **Role authority is `profiles.role`, never client-supplied data.** The
+   signup role clamp and profiles mirroring live in the Better Auth database
+   hooks (`src/lib/auth.ts`) — the public signup API can never mint an
+   admin. The database is reachable only by the app server, so every query
+   in the data-access layer must be scoped by the session user's role and
+   relationships. DB-level guarantees (append-only `events`, protected
+   profile columns, the RLS defense-in-depth layer) live in
+   `drizzle/0001_rls.sql` and are matrix-tested in `src/db/rls.test.ts`
+   against embedded Postgres (PGlite) — the shipped migrations are what's
+   tested; extend both on any schema change.
 9. **Students never read the `items` table directly** — content carries the
    key and distractor rationales; the server strips them when serving items.
 
 ## Layout
 
-- `src/app/` — routes (App Router); server actions in `src/app/auth/actions.ts`
-- `src/db/` — Drizzle schema (`schema.ts`) and lazy client (`client.ts`)
-- `src/lib/` — domain logic (roles, events, supabase clients); unit tests co-located as `*.test.ts`
+- `src/app/` — routes (App Router); server actions in `src/app/auth/actions.ts`;
+  Better Auth endpoints at `src/app/api/auth/[...all]/route.ts`
+- `src/db/` — Drizzle schema (`schema.ts`), Better Auth tables
+  (`auth-schema.ts`), lazy client (`client.ts`)
+- `src/lib/` — domain logic (roles, events, `auth.ts`); unit tests co-located as `*.test.ts`
 - `e2e/` — Playwright smoke tests
 - `scripts/` — operational scripts (seed)
 - `docs/` — the build spec

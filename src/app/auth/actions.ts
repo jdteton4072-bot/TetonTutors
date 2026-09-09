@@ -1,12 +1,12 @@
 "use server";
 
+import { APIError } from "better-auth/api";
+import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { z } from "zod";
-import { getDb } from "@/db/client";
-import { profiles } from "@/db/schema";
+import { getAuth } from "@/lib/auth";
 import { logEvent } from "@/lib/events";
 import { SELF_SIGNUP_ROLES } from "@/lib/roles";
-import { getSupabaseServer } from "@/lib/supabase/server";
 
 const signUpSchema = z.object({
   email: z.string().email(),
@@ -22,6 +22,10 @@ const signInSchema = z.object({
 
 export type AuthResult = { error: string } | undefined;
 
+const NOT_CONFIGURED = {
+  error: "Auth is not configured (missing DATABASE_URL).",
+};
+
 export async function signUp(formData: FormData): Promise<AuthResult> {
   const parsed = signUpSchema.safeParse({
     email: formData.get("email"),
@@ -33,30 +37,21 @@ export async function signUp(formData: FormData): Promise<AuthResult> {
     return { error: parsed.error.issues[0]?.message ?? "Invalid input" };
   }
 
-  const supabase = await getSupabaseServer();
-  if (!supabase) {
-    return { error: "Auth is not configured (missing Supabase env vars)." };
-  }
+  const auth = getAuth();
+  if (!auth) return NOT_CONFIGURED;
 
   const { email, password, displayName, role } = parsed.data;
-  const { data, error } = await supabase.auth.signUp({
-    email,
-    password,
-    options: { data: { display_name: displayName, role } },
-  });
-  if (error) return { error: error.message };
-
-  const userId = data.user?.id ?? null;
-  if (userId) {
-    const db = getDb();
-    if (db) {
-      await db
-        .insert(profiles)
-        .values({ id: userId, role, email, displayName })
-        .onConflictDoNothing();
-    }
+  try {
+    // profiles mirroring + the signup event happen in the user.create
+    // database hooks (src/lib/auth.ts), so every signup path is covered.
+    await auth.api.signUpEmail({
+      body: { email, password, name: displayName, role },
+      headers: await headers(),
+    });
+  } catch (err) {
+    if (err instanceof APIError) return { error: err.message };
+    throw err;
   }
-  await logEvent("user.signed_up", userId, { role });
   redirect("/dashboard");
 }
 
@@ -67,24 +62,29 @@ export async function signIn(formData: FormData): Promise<AuthResult> {
   });
   if (!parsed.success) return { error: "Enter your email and password." };
 
-  const supabase = await getSupabaseServer();
-  if (!supabase) {
-    return { error: "Auth is not configured (missing Supabase env vars)." };
+  const auth = getAuth();
+  if (!auth) return NOT_CONFIGURED;
+
+  try {
+    const result = await auth.api.signInEmail({
+      body: parsed.data,
+      headers: await headers(),
+    });
+    await logEvent("user.signed_in", result.user?.id ?? null, {});
+  } catch (err) {
+    if (err instanceof APIError) return { error: err.message };
+    throw err;
   }
-
-  const { error, data } = await supabase.auth.signInWithPassword(parsed.data);
-  if (error) return { error: error.message };
-
-  await logEvent("user.signed_in", data.user?.id ?? null, {});
   redirect("/dashboard");
 }
 
 export async function signOut(): Promise<void> {
-  const supabase = await getSupabaseServer();
-  if (supabase) {
-    const { data } = await supabase.auth.getUser();
-    await supabase.auth.signOut();
-    await logEvent("user.signed_out", data.user?.id ?? null, {});
+  const auth = getAuth();
+  if (auth) {
+    const requestHeaders = await headers();
+    const session = await auth.api.getSession({ headers: requestHeaders });
+    await auth.api.signOut({ headers: requestHeaders });
+    await logEvent("user.signed_out", session?.user.id ?? null, {});
   }
   redirect("/login");
 }
